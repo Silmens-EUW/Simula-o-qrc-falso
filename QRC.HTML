@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
+  <title>Simulação QRishing</title>
+  <style>
+    :root { --bg:#000; --accent:#ff2b2b; --text:#fff; }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0}
+    body{
+      background:var(--bg); color:var(--text);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+      display:flex; align-items:center; justify-content:center; text-align:center;
+      overflow:hidden; padding:24px;
+    }
+    .wrap{max-width:720px; width:100%}
+    h1{color:var(--accent); font-size:clamp(28px,7vw,44px); margin:0 0 8px}
+    p{font-size:clamp(15px,4vw,20px); margin:8px 0}
+    .blink{animation:blink .7s steps(1,end) infinite}
+    @keyframes blink{50%{opacity:.15}}
+    .tips{margin-top:12px; opacity:.85}
+    .ribbon{position:fixed;top:0;left:0;right:0;height:12px;
+      background:repeating-linear-gradient(45deg,#ff2b2b,#ff2b2b 16px,#111 16px,#111 32px);opacity:.45}
+    /* Overlay invisível para capturar o 1º toque (sem botão) */
+    #unlock {
+      position:fixed; inset:0; background:transparent; z-index:9999; cursor:default;
+    }
+    /* Piscar de fundo para aumentar a tensão visual */
+    .alarm-bg { animation: bgpulse 1s infinite; }
+    @keyframes bgpulse {
+      0%{background:#000;}
+      50%{background:#200;}
+      100%{background:#000;}
+    }
+    .fake-box{
+      margin-top:10px; border:1px dashed #aaa; padding:10px; border-radius:12px; opacity:.95
+    }
+    .small{opacity:.65; font-size:clamp(12px,3vw,14px); margin-top:10px}
+  </style>
+</head>
+<body class="alarm-bg">
+  <div class="ribbon" aria-hidden="true"></div>
+
+  <!-- overlay invisível: desaparece ao primeiro toque e desbloqueia o áudio -->
+  <div id="unlock" aria-hidden="true"></div>
+
+  <main class="wrap" role="main" aria-live="assertive">
+    <h1 class="blink">⚠️ FOSTE ENGANADO!</h1>
+    <p>Não confies cegamente em QR Codes. Verifica sempre a origem e o URL antes de abrir.</p>
+
+    <div class="fake-box" id="fakeInfo">
+      <p><strong>Agora sei qual é o teu IP e a tua localização!</strong></p>
+      <p id="fakeIp"></p>
+      <p id="fakeLoc"></p>
+    </div>
+
+    <div class="tips">
+      <p>Desconfia de pedidos urgentes, confirma o domínio e fala com a equipa de IT em caso de dúvida.</p>
+      <p class="small">Demonstração . Não recolhi  dados reais.</p>
+    </div>
+  </main>
+
+  <!-- elemento <audio> como fallback; fica silenciado até conseguirmos tocar -->
+  <audio id="fallbackAudio" loop playsinline preload="auto">
+    <!-- tom contínuo gerado por data URI (sine ~1kHz curto, em loop) -->
+    <source src="data:audio/wav;base64,UklGRr4AAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYAAAAgAAAAPwAAABAAAACAgICA" type="audio/wav">
+  </audio>
+
+  <script>
+    // --------- Falsos dados “IP/Localização” só para impacto visual ----------
+    (function fakeData(){
+      // Gera IP público plausível (não reservado) aleatório
+      function rand(n){ return Math.floor(Math.random()*n); }
+      function rand255(){ return 1 + rand(254); }
+      const ip = `${rand255()}.${rand255()}.${rand255()}.${rand255()}`;
+      const cidades = ["Lisboa, Portugal","Porto, Portugal","Faro, Portugal","Coimbra, Portugal","Braga, Portugal"];
+      const loc = cidades[rand(cidades.length)];
+      document.getElementById('fakeIp').textContent = "IP: " + ip;
+      document.getElementById('fakeLoc').textContent = "Localização aproximada: " + loc;
+    })();
+
+    // ------------------------ Áudio + Vibração -------------------------------
+    let audioCtx, osc, gain, tryingTimer = null;
+    const fallbackAudio = document.getElementById('fallbackAudio');
+    const unlock = document.getElementById('unlock');
+
+    function startVibration(){
+      if (!navigator.vibrate) return;
+      navigator.vibrate([250,120,250,400]); // uma sequência inicial
+      // repetir padrão tipo alarme
+      setTimeout(() => {
+        const vibLoop = () => navigator.vibrate([300,150,300,600]);
+        window._vibInt = setInterval(vibLoop, 1400);
+      }, 700);
+    }
+    function stopVibration(){
+      if (window._vibInt) { clearInterval(window._vibInt); window._vibInt = null; }
+      if (navigator.vibrate) navigator.vibrate(0);
+    }
+
+    function initWebAudio(){
+      try{
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        osc = audioCtx.createOscillator();
+        gain = audioCtx.createGain();
+        osc.type = 'square';
+        osc.frequency.value = 1000; // irritante
+        gain.gain.value = 0.12;     // volume moderado
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+      }catch(e){
+        // silenciosamente falha
+      }
+    }
+
+    function stopWebAudio(){
+      try{
+        if (osc){ osc.stop(0); osc.disconnect(); osc = null; }
+        if (gain){ gain.disconnect(); gain = null; }
+        if (audioCtx){ audioCtx.close(); audioCtx = null; }
+      }catch(e){}
+    }
+
+    // Tenta iniciar som de todas as formas possíveis
+    async function aggressiveStart(){
+      // 1) Tenta WebAudio
+      if (!audioCtx || audioCtx.state !== 'running'){
+        try{
+          if (!audioCtx) initWebAudio();
+          if (audioCtx && audioCtx.state === 'suspended'){
+            await audioCtx.resume();
+          }
+        }catch(e){}
+      }
+      // 2) Tenta fallback <audio>
+      try{
+        // truque: começar muted e desmutar logo de seguida
+        fallbackAudio.muted = true;
+        await fallbackAudio.play();
+        setTimeout(()=>{ fallbackAudio.muted = false; }, 200);
+      }catch(e){
+        // ignorar se bloquear
+      }
+
+      // Vibração
+      startVibration();
+
+      // 3) Se ainda estiver bloqueado, fica a tentar periodicamente
+      if (!tryingTimer){
+        tryingTimer = setInterval(async () => {
+          try{
+            if (audioCtx && audioCtx.state === 'suspended') await audioCtx.resume();
+            if (fallbackAudio.paused){
+              fallbackAudio.muted = true;
+              await fallbackAudio.play().catch(()=>{});
+              setTimeout(()=>{ fallbackAudio.muted = false; }, 100);
+            }
+          }catch(e){}
+        }, 700);
+      }
+    }
+
+    function fullStop(){
+      stopVibration();
+      if (tryingTimer){ clearInterval(tryingTimer); tryingTimer = null; }
+      stopWebAudio();
+      try{ fallbackAudio.pause(); fallbackAudio.currentTime = 0; }catch(e){}
+      // opcional: remover piscar de fundo
+      document.body.classList.remove('alarm-bg');
+    }
+
+    // Eventos que podem dar “user activation” em vários browsers
+    ['pointerdown','touchstart','click','keydown'].forEach(ev => {
+      window.addEventListener(ev, aggressiveStart, {once:true, passive:true});
+      // também serve para desbloquear se falhou
+      window.addEventListener(ev, () => {
+        if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(()=>{});
+        if (fallbackAudio.paused) { fallbackAudio.play().catch(()=>{}); }
+      }, {passive:true});
+    });
+
+    // O overlay invisível capta o 1º toque em qualquer sítio e desaparece
+    unlock.addEventListener('pointerdown', () => {
+      aggressiveStart();
+      unlock.remove(); // some logo para não atrapalhar
+    }, {passive:true});
+
+    // Tenta arrancar logo no load/visibility/focus
+    window.addEventListener('load', aggressiveStart);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) aggressiveStart();
+    });
+    window.addEventListener('focus', aggressiveStart);
+
+    // Segurança: parar tudo se o utilizador sair/ocultar
+    window.addEventListener('pagehide', fullStop);
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) { /* opcional: pausar áudio aqui */ }
+    });
+
+    // (Opcional) parar após X segundos se quiseres
+    // setTimeout(fullStop, 30000);
+  </script>
+</body>
+</html>
+
